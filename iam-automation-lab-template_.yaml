@@ -1,38 +1,41 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: >
-  Automating creation of IAM resources for lab:
-  - Generates a one-time password in AWS Secrets Manager
-  - Creates S3 and EC2 read-only IAM groups
-  - Creates two IAM users with console access, assigns groups, and forces password change on first login.
-
-Metadata:
-  Source: 'Lab helper template'
-  GithubHint: 'Save this file as iam-lab-template.yaml in your repo'
+Description: IAM Lab - Automated IAM Users, Groups, and Secrets
 
 Resources:
-  OneTimePasswordSecret:
+
+  # IAM Initial Password Secret
+  # This secret is used to generate a one-time password for new IAM users
+  IAMInitialPasswordSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Name: !Sub '${AWS::StackName}-one-time-password'
-      Description: 'Auto-generated one-time password for initial IAM user logins.'
+      Name: IAMInitialPassword
+      Description: One-time password for new IAM users
       GenerateSecretString:
-        PasswordLength: 20
-        RequireEachIncludedType: true
+        SecretStringTemplate: '{"username":"shared"}'
+        GenerateStringKey: password
+        PasswordLength: 12
+        ExcludeCharacters: '"@/\'
 
+  # S3 Read-Only Group
+  # This group has permissions to read from S3 buckets
   S3ReadOnlyGroup:
     Type: AWS::IAM::Group
     Properties:
-      GroupName: !Sub '${AWS::StackName}-S3ReadOnlyGroup'
+      GroupName: S3ReadOnlyGroup
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
 
+  # EC2 Read-Only Group
+  # This group has permissions to read from EC2 instances
   EC2ReadOnlyGroup:
     Type: AWS::IAM::Group
     Properties:
-      GroupName: !Sub '${AWS::StackName}-EC2ReadOnlyGroup'
+      GroupName: EC2ReadOnlyGroup
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
 
+  # S3 User
+  # This user is added to the S3 Read-Only Group and has a login profile
   S3User:
     Type: AWS::IAM::User
     Properties:
@@ -40,9 +43,13 @@ Resources:
       Groups:
         - !Ref S3ReadOnlyGroup
       LoginProfile:
-        Password: !Sub '{{resolve:secretsmanager:${OneTimePasswordSecret}:SecretString}}'
+        Password: !Sub
+          - '{{resolve:secretsmanager:${SecretArn}:SecretString:password}}'
+          - { SecretArn: !Ref IAMInitialPasswordSecret }
         PasswordResetRequired: true
 
+  # EC2 User
+  # This user is been added to the EC2 Read-Only Group and has a login profile
   EC2User:
     Type: AWS::IAM::User
     Properties:
@@ -50,25 +57,20 @@ Resources:
       Groups:
         - !Ref EC2ReadOnlyGroup
       LoginProfile:
-        Password: !Sub '{{resolve:secretsmanager:${OneTimePasswordSecret}:SecretString}}'
+        Password: !Sub
+          - '{{resolve:secretsmanager:${SecretArn}:SecretString:password}}'
+          - { SecretArn: !Ref IAMInitialPasswordSecret }
         PasswordResetRequired: true
 
+
+   # IAM User Group Membership     
 Outputs:
-  SecretArn:
-    Description: ARN of the Secrets Manager secret that holds the shared one-time password.
-    Value: !Ref OneTimePasswordSecret
-  AccountConsoleUrl:
-    Description: Account-specific console sign-in URL.
-    Value: !Sub 'https://${AWS::AccountId}.signin.aws.amazon.com/console'
-  S3GroupName:
-    Description: Name of the S3 read-only group.
-    Value: !Ref S3ReadOnlyGroup
-  EC2GroupName:
-    Description: Name of the EC2 read-only group.
-    Value: !Ref EC2ReadOnlyGroup
   S3UserName:
-    Description: The S3-focused IAM username.
     Value: !Ref S3User
+    Description: The S3 user name
   EC2UserName:
-    Description: The EC2-focused IAM username.
     Value: !Ref EC2User
+    Description: The EC2 user name
+  SharedPasswordSecret:
+    Value: !Ref IAMInitialPasswordSecret
+    Description: Name of the secret storing the shared password
