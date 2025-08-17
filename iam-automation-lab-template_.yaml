@@ -1,0 +1,74 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Automating creation of IAM resources for lab:
+  - Generates a one-time password in AWS Secrets Manager
+  - Creates S3 and EC2 read-only IAM groups
+  - Creates two IAM users with console access, assigns groups, and forces password change on first login.
+
+Metadata:
+  Source: 'Lab helper template'
+  GithubHint: 'Save this file as iam-lab-template.yaml in your repo'
+
+Resources:
+  OneTimePasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${AWS::StackName}-one-time-password'
+      Description: 'Auto-generated one-time password for initial IAM user logins.'
+      GenerateSecretString:
+        PasswordLength: 20
+        RequireEachIncludedType: true
+
+  S3ReadOnlyGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Sub '${AWS::StackName}-S3ReadOnlyGroup'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+
+  EC2ReadOnlyGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Sub '${AWS::StackName}-EC2ReadOnlyGroup'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
+
+  S3User:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: s3-user
+      Groups:
+        - !Ref S3ReadOnlyGroup
+      LoginProfile:
+        Password: !Sub '{{resolve:secretsmanager:${OneTimePasswordSecret}:SecretString}}'
+        PasswordResetRequired: true
+
+  EC2User:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: ec2-user
+      Groups:
+        - !Ref EC2ReadOnlyGroup
+      LoginProfile:
+        Password: !Sub '{{resolve:secretsmanager:${OneTimePasswordSecret}:SecretString}}'
+        PasswordResetRequired: true
+
+Outputs:
+  SecretArn:
+    Description: ARN of the Secrets Manager secret that holds the shared one-time password.
+    Value: !Ref OneTimePasswordSecret
+  AccountConsoleUrl:
+    Description: Account-specific console sign-in URL.
+    Value: !Sub 'https://${AWS::AccountId}.signin.aws.amazon.com/console'
+  S3GroupName:
+    Description: Name of the S3 read-only group.
+    Value: !Ref S3ReadOnlyGroup
+  EC2GroupName:
+    Description: Name of the EC2 read-only group.
+    Value: !Ref EC2ReadOnlyGroup
+  S3UserName:
+    Description: The S3-focused IAM username.
+    Value: !Ref S3User
+  EC2UserName:
+    Description: The EC2-focused IAM username.
+    Value: !Ref EC2User
