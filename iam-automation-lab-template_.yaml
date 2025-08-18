@@ -185,6 +185,7 @@ Resources:
                   raise
               
               return response
+              
               # response_data = json.dumps(response).encode('utf-8')
               # req = request.Request(
               #     event['ResponseURL'],
