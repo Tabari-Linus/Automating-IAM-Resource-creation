@@ -25,28 +25,28 @@ Resources:
   S3UserGroup:
     Type: AWS::IAM::Group
     Properties:
-      GroupName: S3ReadGroup
+      GroupName: !Sub "${AWS::StackName}-S3ReadGroup"
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
 
   EC2UserGroup:
     Type: AWS::IAM::Group
     Properties:
-      GroupName: EC2ReadGroup
+      GroupName: !Sub "${AWS::StackName}-EC2ReadGroup"
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
 
   S3IAMUser:
     Type: AWS::IAM::User
     Properties:
-      UserName: s3-user
+      UserName: !Sub "${AWS::StackName}-s3-user"
       Groups:
         - !Ref S3UserGroup
 
   EC2IAMUser:
     Type: AWS::IAM::User
     Properties:
-      UserName: ec2-user
+      UserName: !Sub "${AWS::StackName}-ec2-user"
       Groups:
         - !Ref EC2UserGroup
 
@@ -76,14 +76,18 @@ Resources:
                   - iam:DeleteLoginProfile
                   - iam:GetLoginProfile
                   - iam:UpdateLoginProfile
-                Resource:
-                  - !Sub "arn:aws:iam::${AWS::AccountId}:user/${S3IAMUser}"
-                  - !Sub "arn:aws:iam::${AWS::AccountId}:user/${EC2IAMUser}"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudformation:SignalResource
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
 
   PasswordSetterLambda:
     Type: AWS::Lambda::Function
     Properties:
-      Timeout: 300
+      FunctionName: !Sub "${AWS::StackName}-PasswordSetter"
+      Description: "Sets initial passwords for IAM users"
+      Timeout: 30
       Handler: index.handler
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
@@ -185,19 +189,6 @@ Resources:
                   raise
               
               return response
-              
-              # response_data = json.dumps(response).encode('utf-8')
-              # req = request.Request(
-              #     event['ResponseURL'],
-              #     data=response_data,
-              #     headers={
-              #         'Content-Length': len(response_data),
-              #         'Content-Type': ''
-              #     },
-              #     method='PUT'
-              # )
-              # with request.urlopen(req) as f:
-              #     pass
 
   CustomPasswordSetter:
     Type: Custom::PasswordSetter
@@ -212,3 +203,14 @@ Resources:
       UserNames:
         - !Ref S3IAMUser
         - !Ref EC2IAMUser
+
+Outputs:
+  S3User:
+    Description: "S3 Read-only user name"
+    Value: !Ref S3IAMUser
+  EC2User:
+    Description: "EC2 Read-only user name"
+    Value: !Ref EC2IAMUser
+  SecretARN:
+    Description: "Secret containing initial password"
+    Value: !Ref OneTimePasswordSecret
