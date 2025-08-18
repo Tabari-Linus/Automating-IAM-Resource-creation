@@ -1,4 +1,3 @@
-template-file-path: iam-automation-lab-template_.yaml
+template-file-path: iam-lab.yaml
 parameters: {}
-tags:
-  project: IAMLabStack
+tags: {}
