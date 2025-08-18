@@ -1,76 +1,192 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: IAM Lab - Automated IAM Users, Groups, and Secrets
+Description: >
+  Automating creation of IAM resources for lab:
+  - Generates a one-time password in AWS Secrets Manager
+  - Creates S3 and EC2 read-only IAM groups
+  - Creates two IAM users with console access, assigns groups, and forces password change on first login.
+
+Metadata:
+  Source: 'Lab helper template'
+  GithubHint: 'Save this file as iam-lab-template.yaml in your repo'
 
 Resources:
-
-  # IAM Initial Password Secret
-  # This secret is used to generate a one-time password for new IAM users
-  IAMInitialPasswordSecret:
+  OneTimePasswordSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Name: IAMInitialPassword
-      Description: One-time password for new IAM users
+      Name: !Sub '${AWS::StackName}-OneTimePassword'
+      Description: Auto-generated one-time password for IAM users
       GenerateSecretString:
-        SecretStringTemplate: '{"username":"shared"}'
+        SecretStringTemplate: '{"password": ""}'
         GenerateStringKey: password
         PasswordLength: 12
-        ExcludeCharacters: '"@/\'
+        ExcludeCharacters: '"@/\\'
+        ExcludePunctuation: true
 
-  # S3 Read-Only Group
-  # This group has permissions to read from S3 buckets
-  S3ReadOnlyGroup:
+  S3UserGroup:
     Type: AWS::IAM::Group
     Properties:
-      GroupName: S3ReadOnlyGroup
+      GroupName: S3ReadGroup
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
 
-  # EC2 Read-Only Group
-  # This group has permissions to read from EC2 instances
-  EC2ReadOnlyGroup:
+  EC2UserGroup:
     Type: AWS::IAM::Group
     Properties:
-      GroupName: EC2ReadOnlyGroup
+      GroupName: EC2ReadGroup
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
 
-  # S3 User
-  # This user is added to the S3 Read-Only Group and has a login profile
-  S3User:
+  S3IAMUser:
     Type: AWS::IAM::User
     Properties:
       UserName: s3-user
       Groups:
-        - !Ref S3ReadOnlyGroup
-      LoginProfile:
-        Password: !Sub
-          - '{{resolve:secretsmanager:${SecretArn}:SecretString:password}}'
-          - { SecretArn: !Ref IAMInitialPasswordSecret }
-        PasswordResetRequired: true
+        - !Ref S3UserGroup
 
-  # EC2 User
-  # This user is been added to the EC2 Read-Only Group and has a login profile
-  EC2User:
+  EC2IAMUser:
     Type: AWS::IAM::User
     Properties:
       UserName: ec2-user
       Groups:
-        - !Ref EC2ReadOnlyGroup
-      LoginProfile:
-        Password: !Sub
-          - '{{resolve:secretsmanager:${SecretArn}:SecretString:password}}'
-          - { SecretArn: !Ref IAMInitialPasswordSecret }
-        PasswordResetRequired: true
+        - !Ref EC2UserGroup
 
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SecretsAndIAMAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref OneTimePasswordSecret
+              - Effect: Allow
+                Action:
+                  - iam:CreateLoginProfile
+                  - iam:DeleteLoginProfile
+                  - iam:GetLoginProfile  
+                  - iam:UpdateLoginProfile
+                Resource: '*'
 
-   # IAM User Group Membership     
-Outputs:
-  S3UserName:
-    Value: !Ref S3User
-    Description: The S3 user name
-  EC2UserName:
-    Value: !Ref EC2User
-    Description: The EC2 user name
-  SharedPasswordSecret:
-    Value: !Ref IAMInitialPasswordSecret
-    Description: Name of the secret storing the shared password
+  PasswordSetterLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Timeout: 300
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          from urllib import request, parse
+          from botocore.config import Config
+
+          config = Config(
+              retries={
+                  'max_attempts': 5,
+                  'mode': 'adaptive'
+              }
+          )
+
+          def handler(event, context):
+              print(f"Received event: {json.dumps(event)}")
+              
+              response = {
+                  'Status': 'SUCCESS',
+                  'PhysicalResourceId': event['LogicalResourceId'] + '_ProfileSetter',
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId']
+              }
+              
+              try:
+                  iam_client = boto3.client('iam', config=config)
+                  sm_client = boto3.client('secretsmanager', config=config)
+                  
+                  if event['RequestType'] in ['Create', 'Update']:
+                      secret_arn = event['ResourceProperties']['SecretArn']
+                      user_names = event['ResourceProperties']['UserNames']
+                      
+                      try:
+                          secret_value = sm_client.get_secret_value(SecretId=secret_arn)['SecretString']
+                          password_dict = json.loads(secret_value)
+                          password = password_dict['password']
+                          
+                          for user in user_names:
+                              try:
+                                  # Check if profile exists
+                                  iam_client.get_login_profile(UserName=user)
+                                  # Update existing profile
+                                  iam_client.update_login_profile(
+                                      UserName=user,
+                                      Password=password,
+                                      PasswordResetRequired=True
+                                  )
+                                  print(f"Updated login profile for {user}")
+                              except iam_client.exceptions.NoSuchEntityException:
+                                  # Create new profile
+                                  iam_client.create_login_profile(
+                                      UserName=user,
+                                      Password=password,
+                                      PasswordResetRequired=True
+                                  )
+                                  print(f"Created login profile for {user}")
+                                  
+                      except Exception as e:
+                          print(f"Error processing secret or IAM: {str(e)}")
+                          raise
+                          
+                  elif event['RequestType'] == 'Delete':
+                      user_names = event['ResourceProperties']['UserNames']
+                      for user in user_names:
+                          try:
+                              iam_client.delete_login_profile(UserName=user)
+                              print(f"Deleted login profile for {user}")
+                          except iam_client.exceptions.NoSuchEntityException:
+                              print(f"Login profile for {user} already deleted")
+                          except Exception as e:
+                              print(f"Error deleting profile for {user}: {str(e)}")
+                              # Continue with other users even if one fails
+              
+              except Exception as e:
+                  response['Status'] = 'FAILED'
+                  response['Reason'] = str(e)
+                  print(f"Operation failed: {str(e)}")
+              
+              # Send response
+              response_data = json.dumps(response).encode('utf-8')
+              req = request.Request(
+                  event['ResponseURL'],
+                  data=response_data,
+                  headers={
+                      'Content-Length': len(response_data),
+                      'Content-Type': ''
+                  },
+                  method='PUT'
+              )
+              with request.urlopen(req) as f:
+                  pass
+
+  CustomPasswordSetter:
+    Type: Custom::PasswordSetter
+    DependsOn:
+      - S3IAMUser
+      - EC2IAMUser
+      - OneTimePasswordSecret
+    Properties:
+      ServiceToken: !GetAtt PasswordSetterLambda.Arn
+      SecretArn: !Ref OneTimePasswordSecret
+      UserNames:
+        - !Ref S3IAMUser
+        - !Ref EC2IAMUser
