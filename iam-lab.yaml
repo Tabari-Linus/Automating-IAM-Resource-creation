@@ -1,3 +1,3 @@
-template-file-path: iam-lab.yaml
+template-file-path: iam-automation-lab-template.yaml
 parameters: {}
 tags: {}
