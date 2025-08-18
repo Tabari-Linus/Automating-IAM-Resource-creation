@@ -58,6 +58,17 @@ Resources:
           Fn::Sub: "{{resolve:secretsmanager:${OneTimePasswordSecret}:SecretString:password}}"
         PasswordResetRequired: true
 
+  NewEC2IAMUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "${AWS::StackName}-New-ec2-user"
+      Groups:
+        - !Ref EC2UserGroup
+      LoginProfile:
+        Password:
+          Fn::Sub: "{{resolve:secretsmanager:${OneTimePasswordSecret}:SecretString:password}}"
+        PasswordResetRequired: true
+
 Outputs:
   S3User:
     Description: "S3 Read-only user name"
@@ -65,6 +76,9 @@ Outputs:
   EC2User:
     Description: "EC2 Read-only user name"
     Value: !Ref EC2IAMUser
+  NewEC2User:
+    Description: "EC2 Read-only user name"
+    Value: !Ref NewEC2IAMUser
   SecretARN:
     Description: "Secret containing initial password"
     Value: !Ref OneTimePasswordSecret
