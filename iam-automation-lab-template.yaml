@@ -13,14 +13,14 @@ Resources:
   OneTimePasswordSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Name: !Sub "${AWS::StackName}-OneTimePassword"
+      Name: !Sub "${AWS::StackName}-OneTimePassword-${AWS::Region}-${AWS::AccountId}"
       Description: Auto-generated one-time password for IAM users
       GenerateSecretString:
         SecretStringTemplate: '{"password": ""}'
         GenerateStringKey: password
         PasswordLength: 12
-        ExcludeCharacters: '"@/\\'
-        ExcludePunctuation: true
+        ExcludeCharacters: '"@/\'
+        RequireEachIncludedType: true
 
   S3UserGroup:
     Type: AWS::IAM::Group
@@ -42,6 +42,10 @@ Resources:
       UserName: !Sub "${AWS::StackName}-s3-user"
       Groups:
         - !Ref S3UserGroup
+      LoginProfile:
+        Password:
+          Fn::Sub: "{{resolve:secretsmanager:${OneTimePasswordSecret}:SecretString:password}}"
+        PasswordResetRequired: true
 
   EC2IAMUser:
     Type: AWS::IAM::User
@@ -49,160 +53,10 @@ Resources:
       UserName: !Sub "${AWS::StackName}-ec2-user"
       Groups:
         - !Ref EC2UserGroup
-
-  LambdaExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: SecretsAndIAMAccess
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action: secretsmanager:GetSecretValue
-                Resource: !Ref OneTimePasswordSecret
-              - Effect: Allow
-                Action:
-                  - iam:CreateLoginProfile
-                  - iam:DeleteLoginProfile
-                  - iam:GetLoginProfile
-                  - iam:UpdateLoginProfile
-                Resource: "*"
-              - Effect: Allow
-                Action:
-                  - cloudformation:SignalResource
-                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
-
-  PasswordSetterLambda:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: !Sub "${AWS::StackName}-PasswordSetter"
-      Description: "Sets initial passwords for IAM users"
-      Timeout: 30
-      Handler: index.handler
-      Role: !GetAtt LambdaExecutionRole.Arn
-      Runtime: python3.12
-      Code:
-        ZipFile: |
-          import json
-          import boto3
-          from urllib import request, parse
-          from botocore.config import Config
-
-          config = Config(
-              retries={
-                  'max_attempts': 5,
-                  'mode': 'adaptive'
-              }
-          )
-
-          def handler(event, context):
-              print(f"Received event: {json.dumps(event)}")
-              
-              response = {
-                  'Status': 'SUCCESS',
-                  'PhysicalResourceId': event['LogicalResourceId'] + '_ProfileSetter',
-                  'StackId': event['StackId'],
-                  'RequestId': event['RequestId'],
-                  'LogicalResourceId': event['LogicalResourceId']
-              }
-              
-              try:
-                  iam_client = boto3.client('iam', config=config)
-                  sm_client = boto3.client('secretsmanager', config=config)
-                  
-                  if event['RequestType'] in ['Create', 'Update']:
-                      secret_arn = event['ResourceProperties']['SecretArn']
-                      user_names = event['ResourceProperties']['UserNames']
-                      
-                      try:
-                          secret_value = sm_client.get_secret_value(SecretId=secret_arn)['SecretString']
-                          password_dict = json.loads(secret_value)
-                          password = password_dict['password']
-                          
-                          for user in user_names:
-                              try:
-                                  # Check if profile exists
-                                  iam_client.get_login_profile(UserName=user)
-                                  # Update existing profile
-                                  iam_client.update_login_profile(
-                                      UserName=user,
-                                      Password=password,
-                                      PasswordResetRequired=True
-                                  )
-                                  print(f"Updated login profile for {user}")
-                              except iam_client.exceptions.NoSuchEntityException:
-                                  # Create new profile
-                                  iam_client.create_login_profile(
-                                      UserName=user,
-                                      Password=password,
-                                      PasswordResetRequired=True
-                                  )
-                                  print(f"Created login profile for {user}")
-                                  
-                      except Exception as e:
-                          print(f"Error processing secret or IAM: {str(e)}")
-                          raise
-                          
-                  elif event['RequestType'] == 'Delete':
-                      user_names = event['ResourceProperties']['UserNames']
-                      for user in user_names:
-                          try:
-                              iam_client.delete_login_profile(UserName=user)
-                              print(f"Deleted login profile for {user}")
-                          except iam_client.exceptions.NoSuchEntityException:
-                              print(f"Login profile for {user} already deleted")
-                          except Exception as e:
-                              print(f"Error deleting profile for {user}: {str(e)}")
-                              # Continue with other users even if one fails
-              
-              except Exception as e:
-                  response['Status'] = 'FAILED'
-                  response['Reason'] = str(e)
-                  print(f"Operation failed: {str(e)}")
-              
-              # Send response
-              try:
-                  response_data = json.dumps(response).encode('utf-8')
-                  req = request.Request(
-                      event['ResponseURL'],
-                      data=response_data,
-                      headers={
-                          'Content-Length': len(response_data),
-                          'Content-Type': ''
-                      },
-                      method='PUT'
-                  )
-                  with request.urlopen(req) as f:
-                      pass
-              except Exception as e:
-                  print(f"Failed to send response: {str(e)}")
-                  raise
-              
-              return response
-
-  CustomPasswordSetter:
-    Type: Custom::PasswordSetter
-    DependsOn:
-      - S3IAMUser
-      - EC2IAMUser
-      - OneTimePasswordSecret
-      - PasswordSetterLambda
-    Properties:
-      ServiceToken: !GetAtt PasswordSetterLambda.Arn
-      SecretArn: !Ref OneTimePasswordSecret
-      UserNames:
-        - !Ref S3IAMUser
-        - !Ref EC2IAMUser
+      LoginProfile:
+        Password:
+          Fn::Sub: "{{resolve:secretsmanager:${OneTimePasswordSecret}:SecretString:password}}"
+        PasswordResetRequired: true
 
 Outputs:
   S3User:
