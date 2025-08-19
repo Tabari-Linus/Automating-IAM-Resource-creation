@@ -7,7 +7,7 @@ Description: >
 
 Metadata:
   Source: "Lab helper template"
-  GithubHint: "Save this file as iam-lab-template.yaml in your repo"
+  GithubHint: "Save this file as iam-automation-lab-template.yaml in your repo"
 
 Resources:
   OneTimePasswordSecret:
@@ -58,10 +58,10 @@ Resources:
           Fn::Sub: "{{resolve:secretsmanager:${OneTimePasswordSecret}:SecretString:password}}"
         PasswordResetRequired: true
 
-  NewEC2IAMUser:
+  EC2LinusUSer:
     Type: AWS::IAM::User
     Properties:
-      UserName: !Sub "${AWS::StackName}-New-ec2-user"
+      UserName: !Sub "${AWS::StackName}-EC2LinusUSer-user"
       Groups:
         - !Ref EC2UserGroup
       LoginProfile:
@@ -76,9 +76,9 @@ Outputs:
   EC2User:
     Description: "EC2 Read-only user name"
     Value: !Ref EC2IAMUser
-  NewEC2User:
-    Description: "EC2 Read-only user name"
-    Value: !Ref NewEC2IAMUser
+  EC2LinusUSer:
+    Description: "EC2 Linus user name"
+    Value: !Ref EC2LinusUSer
   SecretARN:
     Description: "Secret containing initial password"
     Value: !Ref OneTimePasswordSecret
